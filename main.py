@@ -17,11 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация - ТОКЕН УКАЗЫВАЕТСЯ ПРЯМО ЗДЕСЬ
 BOT_TOKEN = "8493433461:AAEZxG0Ix7em5ff3XHF36EZCmZyPMkf6WZE"  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ТОКЕН
-DEFAULT_ADMIN_PASSWORD = "34613461"
-
-# Настройки переподключения
-RECONNECT_DELAY = 5
-MAX_RECONNECT_ATTEMPTS = 10
+DEFAULT_ADMIN_PASSWORD = "admin123"
 
 # Хеширование паролей
 def hash_password(password):
@@ -1081,10 +1077,16 @@ async def error_handler(update, context):
     except Exception as e:
         logger.exception("Исключение в обработчике ошибок:")
 
-async def run_bot():
-    """Запуск бота"""
+def main():
+    """Основная функция запуска бота - СИНХРОННАЯ для Railway"""
     try:
-        from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+        # Проверяем наличие необходимых библиотек
+        try:
+            from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+        except ImportError:
+            print("❌ Библиотека python-telegram-bot не установлена!")
+            print("Добавьте в requirements.txt: python-telegram-bot==20.7")
+            return
         
         # Инициализация базы данных
         init_db()
@@ -1096,6 +1098,7 @@ async def run_bot():
         
         logger.info(f"🚀 Запуск бота с токеном: {BOT_TOKEN[:10]}...")
         
+        # Создаем и запускаем приложение СИНХРОННО
         application = Application.builder().token(BOT_TOKEN).build()
         
         # Обработчики команд
@@ -1128,25 +1131,8 @@ async def run_bot():
         print(f"📍 Токен: {BOT_TOKEN[:10]}...")
         print("⏹️ Для остановки нажмите Ctrl+C")
         
-        await application.run_polling()
-        
-    except Exception as e:
-        logger.error(f"Критическая ошибка при запуске бота: {e}")
-        raise
-
-def main():
-    """Основная функция запуска бота"""
-    try:
-        # Проверяем наличие необходимых библиотек
-        try:
-            from telegram.ext import Application
-        except ImportError:
-            print("❌ Библиотека python-telegram-bot не установлена!")
-            print("Добавьте в requirements.txt: python-telegram-bot==20.7")
-            return
-        
-        # Запускаем бота
-        asyncio.run(run_bot())
+        # ЗАПУСКАЕМ БОТА СИНХРОННО - это важно для Railway
+        application.run_polling()
         
     except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем")

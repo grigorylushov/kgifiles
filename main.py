@@ -1255,7 +1255,8 @@ async def error_handler(update, context):
 
 def main():
     # Принудительно делаем пользователя с вашим ID администратором
-add_admin(8112565926, 1)  # Замените ВАШ_USER_ID на ваш реальный ID
+    add_admin(8112565926, 1)  # Замените ВАШ_USER_ID на ваш реальный ID
+    
     """Основная функция запуска бота - СИНХРОННАЯ для Railway"""
     try:
         # Проверяем наличие необходимых библиотек
@@ -1278,6 +1279,8 @@ add_admin(8112565926, 1)  # Замените ВАШ_USER_ID на ваш реал
         
         # Создаем и запускаем приложение СИНХРОННО
         application = Application.builder().token(BOT_TOKEN).build()
+        
+        # Остальной код без изменений...
         
         # Обработчики команд
         application.add_handler(CommandHandler("start", start))

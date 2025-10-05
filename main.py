@@ -23,7 +23,7 @@ BOT_TOKEN = "8493433461:AAEZxG0Ix7em5ff3XHF36EZCmZyPMkf6WZE"  # ЗАМЕНИТЕ
 DEFAULT_ADMIN_PASSWORD = "admin123"
 
 # GitHub конфигурация - ЗАПОЛНИТЕ ЭТИ ДАННЫЕ!
-GITHUB_TOKEN = "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"  # Замените на ваш токен
+GITHUB_TOKEN = "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"  # Замените на ваш токен
 GITHUB_USERNAME = "grigorylushov"
 GITHUB_REPO = "kgifiles"
 GITHUB_BRANCH = "main"

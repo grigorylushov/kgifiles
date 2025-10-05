@@ -20,13 +20,16 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 BOT_TOKEN = "8493433461:AAEZxG0Ix7em5ff3XHF36EZCmZyPMkf6WZE"  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ТОКЕН
-DEFAULT_ADMIN_PASSWORD = "34613461"
+DEFAULT_ADMIN_PASSWORD = "admin123"
 
 # GitHub конфигурация - ЗАПОЛНИТЕ ЭТИ ДАННЫЕ!
 GITHUB_TOKEN = "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"  # Замените на ваш токен
 GITHUB_USERNAME = "grigorylushov"
 GITHUB_REPO = "kgifiles"
 GITHUB_BRANCH = "main"
+
+# Предустановленные администраторы
+PRESET_ADMINS = [8112565926, 1]  # Добавляем вашего ID и ID по умолчанию
 
 # Хеширование паролей
 def hash_password(password):
@@ -231,15 +234,18 @@ def init_db():
             )
         ''')
         
-        # Создаем первого администратора, если его нет
-        cursor.execute('SELECT * FROM users WHERE is_admin = TRUE')
-        if not cursor.fetchone():
-            admin_hash = hash_password(DEFAULT_ADMIN_PASSWORD)
-            cursor.execute('''
-                INSERT OR IGNORE INTO users (user_id, username, first_name, password_hash, is_admin)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (1, 'admin', 'Administrator', admin_hash, True))
-            logger.info("Создан администратор по умолчанию")
+        # Создаем администраторов по умолчанию
+        cursor.execute('SELECT user_id FROM users WHERE is_admin = TRUE')
+        existing_admins = [row[0] for row in cursor.fetchall()]
+        
+        for admin_id in PRESET_ADMINS:
+            if admin_id not in existing_admins:
+                admin_hash = hash_password(DEFAULT_ADMIN_PASSWORD)
+                cursor.execute('''
+                    INSERT OR IGNORE INTO users (user_id, username, first_name, password_hash, is_admin)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (admin_id, f'admin_{admin_id}', 'Administrator', admin_hash, True))
+                logger.info(f"✅ Создан администратор с ID: {admin_id}")
         
         conn.commit()
         conn.close()
@@ -1254,9 +1260,6 @@ async def error_handler(update, context):
         logger.exception("Исключение в обработчике ошибок:")
 
 def main():
-    # Принудительно делаем пользователя с вашим ID администратором
-    add_admin(8112565926, 1)  # Замените ВАШ_USER_ID на ваш реальный ID
-    
     """Основная функция запуска бота - СИНХРОННАЯ для Railway"""
     try:
         # Проверяем наличие необходимых библиотек
@@ -1279,8 +1282,6 @@ def main():
         
         # Создаем и запускаем приложение СИНХРОННО
         application = Application.builder().token(BOT_TOKEN).build()
-        
-        # Остальной код без изменений...
         
         # Обработчики команд
         application.add_handler(CommandHandler("start", start))

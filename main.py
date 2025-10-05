@@ -20,10 +20,10 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 BOT_TOKEN = "8493433461:AAEZxG0Ix7em5ff3XHF36EZCmZyPMkf6WZE"  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ТОКЕН
-DEFAULT_ADMIN_PASSWORD = "admin123"
+DEFAULT_ADMIN_PASSWORD = "34613461"
 
 # GitHub конфигурация - ЗАПОЛНИТЕ ЭТИ ДАННЫЕ!
-GITHUB_TOKEN = "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"  # Замените на ваш токен
+## GITHUB_TOKEN = "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"  # Замените на ваш токен
 GITHUB_USERNAME = "grigorylushov"
 GITHUB_REPO = "kgifiles"
 GITHUB_BRANCH = "main"

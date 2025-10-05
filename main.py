@@ -7,6 +7,9 @@ import asyncio
 import time
 from datetime import datetime
 import hashlib
+import shutil
+import requests
+import json
 
 # Настройка логирования
 logging.basicConfig(
@@ -15,9 +18,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация - ТОКЕН УКАЗЫВАЕТСЯ ПРЯМО ЗДЕСЬ
+# Конфигурация
 BOT_TOKEN = "8493433461:AAEZxG0Ix7em5ff3XHF36EZCmZyPMkf6WZE"  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ТОКЕН
 DEFAULT_ADMIN_PASSWORD = "34613461"
+
+# GitHub конфигурация - ЗАПОЛНИТЕ ЭТИ ДАННЫЕ!
+GITHUB_TOKEN = "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"  # Замените на ваш токен
+GITHUB_USERNAME = "grigorylushov"
+GITHUB_REPO = "kgifiles"
+GITHUB_BRANCH = "main"
 
 # Хеширование паролей
 def hash_password(password):
@@ -25,11 +34,144 @@ def hash_password(password):
 
 # Получение пути к БД
 def get_db_path():
-    return '/tmp/files.db' if 'RAILWAY_ENVIRONMENT' in os.environ else 'files.db'
+    return 'files.db'
+
+# Функции для работы с GitHub
+def upload_to_github():
+    """Загружает files.db в GitHub"""
+    try:
+        if not os.path.exists('files.db'):
+            logger.error("❌ Файл files.db не найден для загрузки в GitHub")
+            return False
+        
+        if GITHUB_TOKEN == "YOUR_GITHUB_TOKEN_HERE":
+            logger.warning("⚠️ GitHub токен не настроен, пропускаем загрузку")
+            return False
+        
+        # Читаем содержимое файла
+        with open('files.db', 'rb') as f:
+            content = f.read()
+        
+        # Кодируем в base64
+        import base64
+        content_b64 = base64.b64encode(content).decode('utf-8')
+        
+        # URL для API GitHub
+        url = f"https://api.github.com/repos/{GITHUB_USERNAME}/{GITHUB_REPO}/contents/files.db"
+        
+        # Проверяем существование файла
+        headers = {
+            'Authorization': f'token {GITHUB_TOKEN}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        
+        # Получаем текущий sha файла (если существует)
+        response = requests.get(url, headers=headers)
+        sha = None
+        if response.status_code == 200:
+            sha = response.json().get('sha')
+        
+        # Данные для загрузки
+        data = {
+            "message": f"Auto-backup: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "content": content_b64,
+            "branch": GITHUB_BRANCH
+        }
+        
+        if sha:
+            data["sha"] = sha
+        
+        # Загружаем файл
+        response = requests.put(url, headers=headers, data=json.dumps(data))
+        
+        if response.status_code in [200, 201]:
+            logger.info("✅ База данных успешно загружена в GitHub")
+            return True
+        else:
+            logger.error(f"❌ Ошибка загрузки в GitHub: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка при загрузке в GitHub: {e}")
+        return False
+
+def download_from_github():
+    """Скачивает files.db из GitHub"""
+    try:
+        if GITHUB_TOKEN == "YOUR_GITHUB_TOKEN_HERE":
+            logger.warning("⚠️ GitHub токен не настроен, пропускаем скачивание")
+            return False
+        
+        url = f"https://api.github.com/repos/{GITHUB_USERNAME}/{GITHUB_REPO}/contents/files.db"
+        
+        headers = {
+            'Authorization': f'token {GITHUB_TOKEN}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            file_data = response.json()
+            download_url = file_data.get('download_url')
+            
+            if download_url:
+                file_response = requests.get(download_url)
+                if file_response.status_code == 200:
+                    with open('files.db', 'wb') as f:
+                        f.write(file_response.content)
+                    logger.info("✅ База данных успешно скачана из GitHub")
+                    return True
+        
+        logger.warning("⚠️ Файл не найден в GitHub, будет создана новая БД")
+        return False
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при скачивании из GitHub: {e}")
+        return False
+
+# Функция для резервного копирования БД
+def backup_database():
+    """Создает резервную копию и загружает в GitHub"""
+    try:
+        if os.path.exists('files.db'):
+            # Локальная резервная копия
+            backup_dir = 'backups'
+            if not os.path.exists(backup_dir):
+                os.makedirs(backup_dir)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_file = f"{backup_dir}/files_backup_{timestamp}.db"
+            
+            shutil.copy2('files.db', backup_file)
+            logger.info(f"✅ Создана локальная резервная копия: {backup_file}")
+            
+            # Загружаем в GitHub
+            if upload_to_github():
+                logger.info("✅ Резервная копия загружена в GitHub")
+            else:
+                logger.warning("⚠️ Не удалось загрузить в GitHub")
+            
+            # Удаляем старые локальные резервные копии (оставляем последние 3)
+            backups = sorted([f for f in os.listdir(backup_dir) if f.startswith('files_backup_')])
+            if len(backups) > 3:
+                for old_backup in backups[:-3]:
+                    os.remove(os.path.join(backup_dir, old_backup))
+                    logger.info(f"🗑️ Удалена старая резервная копия: {old_backup}")
+                    
+    except Exception as e:
+        logger.error(f"❌ Ошибка при создании резервной копии: {e}")
 
 # Инициализация базы данных
 def init_db():
     try:
+        # Пробуем скачать из GitHub
+        logger.info("🔄 Проверяем наличие базы данных в GitHub...")
+        downloaded = download_from_github()
+        
+        if not downloaded and not os.path.exists('files.db'):
+            logger.info("📝 Создаем новую базу данных")
+        
         conn = sqlite3.connect(get_db_path(), check_same_thread=False)
         cursor = conn.cursor()
         
@@ -101,6 +243,10 @@ def init_db():
         
         conn.commit()
         conn.close()
+        
+        # Создаем резервную копию после инициализации
+        backup_database()
+        
         logger.info("База данных инициализирована")
     except Exception as e:
         logger.error(f"Ошибка инициализации БД: {e}")
@@ -484,6 +630,7 @@ async def admin_panel(update, context):
             [InlineKeyboardButton("📨 Запросы на размещение", callback_data='admin_requests')],
             [InlineKeyboardButton("➕ Добавить файл", callback_data='admin_add_file')],
             [InlineKeyboardButton("👥 Управление пользователями", callback_data='admin_users')],
+            [InlineKeyboardButton("💾 Резервная копия", callback_data='admin_backup')],
             [InlineKeyboardButton("🔙 Назад", callback_data='back_to_main')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -566,6 +713,24 @@ async def add_admin_command(update, context):
     except Exception as e:
         logger.error(f"Ошибка в add_admin_command: {e}")
 
+# Новая команда для резервного копирования
+async def backup_command(update, context):
+    try:
+        user = update.effective_user
+        user_session = get_user_session(user.id)
+        
+        if not user_session or not user_session[3]:
+            await update.message.reply_text("❌ Доступ запрещен! Требуются права администратора.")
+            return
+        
+        await update.message.reply_text("🔄 Создаю резервную копию...")
+        backup_database()
+        await update.message.reply_text("✅ Резервная копия создана и загружена в GitHub!")
+        
+    except Exception as e:
+        logger.error(f"Ошибка в backup_command: {e}")
+        await update.message.reply_text("❌ Ошибка при создании резервной копии")
+
 async def button_handler(update, context):
     try:
         query = update.callback_query
@@ -605,6 +770,17 @@ async def button_handler(update, context):
         
         if data == 'admin_users':
             await admin_users(update, context)
+            return
+        
+        if data == 'admin_backup':
+            user_session = get_user_session(user_id)
+            if not user_session or not user_session[3]:
+                await query.edit_message_text("❌ Доступ запрещен!")
+                return
+                
+            await query.edit_message_text("🔄 Создаю резервную копию...")
+            backup_database()
+            await query.edit_message_text("✅ Резервная копия создана и загружена в GitHub!")
             return
         
         if data == 'download':
@@ -1109,6 +1285,7 @@ def main():
         application.add_handler(CommandHandler("addadmin", add_admin_command))
         application.add_handler(CommandHandler("approve", approve_request))
         application.add_handler(CommandHandler("reject", reject_request))
+        application.add_handler(CommandHandler("backup", backup_command))
         
         # Обработчики callback запросов
         application.add_handler(CallbackQueryHandler(button_handler))
@@ -1131,10 +1308,12 @@ def main():
         print(f"📍 Токен: {BOT_TOKEN[:10]}...")
         print("⏹️ Для остановки нажмите Ctrl+C")
         
-        # ЗАПУСКАЕМ БОТА СИНХРОННО - это важно для Railway
+        # ЗАПУСКАЕМ БОТА СИНХРОННО
         application.run_polling()
         
     except KeyboardInterrupt:
+        # Создаем резервную копию при остановке
+        backup_database()
         logger.info("Бот остановлен пользователем")
         print("\n🛑 Бот остановлен")
     except Exception as e:

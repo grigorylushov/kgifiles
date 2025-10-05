@@ -8,8 +8,8 @@ import time
 from datetime import datetime
 import hashlib
 import shutil
-import requests
-import json
+import ftplib
+import io
 
 # Настройка логирования
 logging.basicConfig(
@@ -20,13 +20,14 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 BOT_TOKEN = "8493433461:AAEZxG0Ix7em5ff3XHF36EZCmZyPMkf6WZE"  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ТОКЕН
-DEFAULT_ADMIN_PASSWORD = "34613461"
+DEFAULT_ADMIN_PASSWORD = "admin123"
 
-# GitHub конфигурация - ЗАПОЛНИТЕ ЭТИ ДАННЫЕ!
-GITHUB_TOKEN = "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"  # Замените на ваш токен
-GITHUB_USERNAME = "grigorylushov"
-GITHUB_REPO = "kgifiles"
-GITHUB_BRANCH = "main"
+# FTP конфигурация
+FTP_HOST = "77.222.40.198"
+FTP_USERNAME = "grigoryl_bot"
+FTP_PASSWORD = "WVSJMBTB7D@nNLMQ"  # Замените на ваш пароль
+FTP_PORT = 21
+FTP_BACKUP_DIR = "backups"
 
 # Предустановленные администраторы
 PRESET_ADMINS = [8112565926, 1]  # Добавляем вашего ID и ID по умолчанию
@@ -39,107 +40,129 @@ def hash_password(password):
 def get_db_path():
     return 'files.db'
 
-# Функции для работы с GitHub
-def upload_to_github():
-    """Загружает files.db в GitHub"""
+# Функции для работы с FTP
+def upload_to_ftp():
+    """Загружает резервную копию на FTP сервер"""
     try:
         if not os.path.exists('files.db'):
-            logger.error("❌ Файл files.db не найден для загрузки в GitHub")
+            logger.error("❌ Файл files.db не найден для загрузки на FTP")
             return False
         
-        if GITHUB_TOKEN == "YOUR_GITHUB_TOKEN_HERE":
-            logger.warning("⚠️ GitHub токен не настроен, пропускаем загрузку")
+        if FTP_PASSWORD == "YOUR_FTP_PASSWORD_HERE":
+            logger.warning("⚠️ FTP пароль не настроен, пропускаем загрузку")
             return False
         
-        # Читаем содержимое файла
-        with open('files.db', 'rb') as f:
-            content = f.read()
+        # Создаем резервную копию с timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"files_backup_{timestamp}.db"
         
-        # Кодируем в base64
-        import base64
-        content_b64 = base64.b64encode(content).decode('utf-8')
+        # Подключаемся к FTP
+        ftp = ftplib.FTP()
+        ftp.connect(FTP_HOST, FTP_PORT)
+        ftp.login(FTP_USERNAME, FTP_PASSWORD)
         
-        # URL для API GitHub
-        url = f"https://api.github.com/repos/{GITHUB_USERNAME}/{GITHUB_REPO}/contents/files.db"
+        # Создаем директорию для бэкапов если не существует
+        try:
+            ftp.mkd(FTP_BACKUP_DIR)
+        except:
+            pass  # Директория уже существует
         
-        # Проверяем существование файла
-        headers = {
-            'Authorization': f'token {GITHUB_TOKEN}',
-            'Accept': 'application/vnd.github.v3+json'
-        }
-        
-        # Получаем текущий sha файла (если существует)
-        response = requests.get(url, headers=headers)
-        sha = None
-        if response.status_code == 200:
-            sha = response.json().get('sha')
-        
-        # Данные для загрузки
-        data = {
-            "message": f"Auto-backup: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            "content": content_b64,
-            "branch": GITHUB_BRANCH
-        }
-        
-        if sha:
-            data["sha"] = sha
+        ftp.cwd(FTP_BACKUP_DIR)
         
         # Загружаем файл
-        response = requests.put(url, headers=headers, data=json.dumps(data))
+        with open('files.db', 'rb') as f:
+            ftp.storbinary(f'STOR {backup_filename}', f)
         
-        if response.status_code in [200, 201]:
-            logger.info("✅ База данных успешно загружена в GitHub")
-            return True
-        else:
-            logger.error(f"❌ Ошибка загрузки в GitHub: {response.status_code} - {response.text}")
-            return False
-            
+        ftp.quit()
+        logger.info(f"✅ Резервная копия загружена на FTP: {backup_filename}")
+        return True
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка при загрузке в GitHub: {e}")
+        logger.error(f"❌ Ошибка при загрузке на FTP: {e}")
         return False
 
-def download_from_github():
-    """Скачивает files.db из GitHub"""
+def download_from_ftp():
+    """Скачивает последнюю резервную копию с FTP сервера"""
     try:
-        if GITHUB_TOKEN == "YOUR_GITHUB_TOKEN_HERE":
-            logger.warning("⚠️ GitHub токен не настроен, пропускаем скачивание")
+        if FTP_PASSWORD == "YOUR_FTP_PASSWORD_HERE":
+            logger.warning("⚠️ FTP пароль не настроен, пропускаем скачивание")
             return False
         
-        url = f"https://api.github.com/repos/{GITHUB_USERNAME}/{GITHUB_REPO}/contents/files.db"
+        # Подключаемся к FTP
+        ftp = ftplib.FTP()
+        ftp.connect(FTP_HOST, FTP_PORT)
+        ftp.login(FTP_USERNAME, FTP_PASSWORD)
         
-        headers = {
-            'Authorization': f'token {GITHUB_TOKEN}',
-            'Accept': 'application/vnd.github.v3+json'
-        }
+        # Переходим в директорию бэкапов
+        try:
+            ftp.cwd(FTP_BACKUP_DIR)
+        except:
+            logger.warning("⚠️ Директория бэкапов не найдена на FTP")
+            ftp.quit()
+            return False
         
-        response = requests.get(url, headers=headers)
+        # Получаем список файлов
+        files = []
+        ftp.retrlines('NLST', files.append)
         
-        if response.status_code == 200:
-            file_data = response.json()
-            download_url = file_data.get('download_url')
-            
-            if download_url:
-                file_response = requests.get(download_url)
-                if file_response.status_code == 200:
-                    with open('files.db', 'wb') as f:
-                        f.write(file_response.content)
-                    logger.info("✅ База данных успешно скачана из GitHub")
-                    return True
+        # Фильтруем только backup файлы и сортируем по дате
+        backup_files = [f for f in files if f.startswith('files_backup_') and f.endswith('.db')]
+        if not backup_files:
+            logger.warning("⚠️ Резервные копии не найдены на FTP")
+            ftp.quit()
+            return False
         
-        logger.warning("⚠️ Файл не найден в GitHub, будет создана новая БД")
-        return False
+        # Берем самый свежий файл
+        latest_backup = sorted(backup_files)[-1]
+        
+        # Скачиваем файл
+        with open('files.db', 'wb') as f:
+            ftp.retrbinary(f'RETR {latest_backup}', f.write)
+        
+        ftp.quit()
+        logger.info(f"✅ Восстановлена БД из FTP: {latest_backup}")
+        return True
         
     except Exception as e:
-        logger.error(f"❌ Ошибка при скачивании из GitHub: {e}")
+        logger.error(f"❌ Ошибка при скачивании с FTP: {e}")
         return False
+
+def list_ftp_backups():
+    """Получает список резервных копий на FTP сервере"""
+    try:
+        if FTP_PASSWORD == "YOUR_FTP_PASSWORD_HERE":
+            return []
+        
+        ftp = ftplib.FTP()
+        ftp.connect(FTP_HOST, FTP_PORT)
+        ftp.login(FTP_USERNAME, FTP_PASSWORD)
+        
+        try:
+            ftp.cwd(FTP_BACKUP_DIR)
+        except:
+            ftp.quit()
+            return []
+        
+        files = []
+        ftp.retrlines('NLST', files.append)
+        
+        backup_files = [f for f in files if f.startswith('files_backup_') and f.endswith('.db')]
+        backup_files.sort(reverse=True)
+        
+        ftp.quit()
+        return backup_files[:10]  # Возвращаем последние 10 бэкапов
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при получении списка бэкапов: {e}")
+        return []
 
 # Функция для резервного копирования БД
 def backup_database():
-    """Создает резервную копию и загружает в GitHub"""
+    """Создает резервную копию и загружает на FTP"""
     try:
         if os.path.exists('files.db'):
             # Локальная резервная копия
-            backup_dir = 'backups'
+            backup_dir = 'local_backups'
             if not os.path.exists(backup_dir):
                 os.makedirs(backup_dir)
             
@@ -149,18 +172,18 @@ def backup_database():
             shutil.copy2('files.db', backup_file)
             logger.info(f"✅ Создана локальная резервная копия: {backup_file}")
             
-            # Загружаем в GitHub
-            if upload_to_github():
-                logger.info("✅ Резервная копия загружена в GitHub")
+            # Загружаем на FTP
+            if upload_to_ftp():
+                logger.info("✅ Резервная копия загружена на FTP")
             else:
-                logger.warning("⚠️ Не удалось загрузить в GitHub")
+                logger.warning("⚠️ Не удалось загрузить на FTP")
             
             # Удаляем старые локальные резервные копии (оставляем последние 3)
             backups = sorted([f for f in os.listdir(backup_dir) if f.startswith('files_backup_')])
             if len(backups) > 3:
                 for old_backup in backups[:-3]:
                     os.remove(os.path.join(backup_dir, old_backup))
-                    logger.info(f"🗑️ Удалена старая резервная копия: {old_backup}")
+                    logger.info(f"🗑️ Удалена старая локальная копия: {old_backup}")
                     
     except Exception as e:
         logger.error(f"❌ Ошибка при создании резервной копии: {e}")
@@ -168,9 +191,9 @@ def backup_database():
 # Инициализация базы данных
 def init_db():
     try:
-        # Пробуем скачать из GitHub
-        logger.info("🔄 Проверяем наличие базы данных в GitHub...")
-        downloaded = download_from_github()
+        # Пробуем скачать с FTP
+        logger.info("🔄 Проверяем наличие резервных копий на FTP...")
+        downloaded = download_from_ftp()
         
         if not downloaded and not os.path.exists('files.db'):
             logger.info("📝 Создаем новую базу данных")
@@ -637,6 +660,7 @@ async def admin_panel(update, context):
             [InlineKeyboardButton("➕ Добавить файл", callback_data='admin_add_file')],
             [InlineKeyboardButton("👥 Управление пользователями", callback_data='admin_users')],
             [InlineKeyboardButton("💾 Резервная копия", callback_data='admin_backup')],
+            [InlineKeyboardButton("📋 Список бэкапов", callback_data='admin_backup_list')],
             [InlineKeyboardButton("🔙 Назад", callback_data='back_to_main')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -719,7 +743,7 @@ async def add_admin_command(update, context):
     except Exception as e:
         logger.error(f"Ошибка в add_admin_command: {e}")
 
-# Новая команда для резервного копирования
+# Команда для резервного копирования
 async def backup_command(update, context):
     try:
         user = update.effective_user
@@ -731,7 +755,7 @@ async def backup_command(update, context):
         
         await update.message.reply_text("🔄 Создаю резервную копию...")
         backup_database()
-        await update.message.reply_text("✅ Резервная копия создана и загружена в GitHub!")
+        await update.message.reply_text("✅ Резервная копия создана и загружена на FTP!")
         
     except Exception as e:
         logger.error(f"Ошибка в backup_command: {e}")
@@ -786,7 +810,36 @@ async def button_handler(update, context):
                 
             await query.edit_message_text("🔄 Создаю резервную копию...")
             backup_database()
-            await query.edit_message_text("✅ Резервная копия создана и загружена в GitHub!")
+            await query.edit_message_text("✅ Резервная копия создана и загружена на FTP!")
+            return
+
+        if data == 'admin_backup_list':
+            user_session = get_user_session(user_id)
+            if not user_session or not user_session[3]:
+                await query.edit_message_text("❌ Доступ запрещен!")
+                return
+                
+            await query.edit_message_text("🔄 Получаю список резервных копий...")
+            backups = list_ftp_backups()
+            
+            if backups:
+                backups_text = "📋 Последние резервные копии на FTP:\n\n"
+                for i, backup in enumerate(backups, 1):
+                    # Извлекаем дату из имени файла
+                    date_str = backup.replace('files_backup_', '').replace('.db', '')
+                    try:
+                        date_obj = datetime.strptime(date_str, "%Y%m%d_%H%M%S")
+                        formatted_date = date_obj.strftime("%d.%m.%Y %H:%M:%S")
+                    except:
+                        formatted_date = date_str
+                    
+                    backups_text += f"{i}. {formatted_date}\n"
+                
+                backups_text += f"\nВсего копий: {len(backups)}"
+            else:
+                backups_text = "📋 Резервные копии не найдены на FTP сервере"
+            
+            await query.edit_message_text(backups_text)
             return
         
         if data == 'download':

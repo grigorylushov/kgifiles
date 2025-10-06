@@ -20,17 +20,17 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 BOT_TOKEN = "8493433461:AAEZxG0Ix7em5ff3XHF36EZCmZyPMkf6WZE"  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ТОКЕН
-DEFAULT_ADMIN_PASSWORD = "34613461"
+DEFAULT_ADMIN_PASSWORD = "admin123"
 
 # FTP конфигурация
 FTP_HOST = "77.222.40.198"
-FTP_USERNAME = "grigoryl_bot"
-FTP_PASSWORD = "WVSJMBTB7D@nNLMQ"  # Замените на ваш пароль
+FTP_USERNAME = "grigoryl"
+FTP_PASSWORD = "WVSJMBTB7D@nNLMQWVSJMBTB7D@nNLMQ"  # Замените на ваш пароль
 FTP_PORT = 21
 FTP_BACKUP_DIR = "backups"
 
 # Предустановленные администраторы
-PRESET_ADMINS = [8112565926, 1]  # Добавляем вашего ID и ID по умолчанию
+PRESET_ADMINS = [8112565926]  # Добавляем вашего ID и ID по умолчанию
 
 # Хеширование паролей
 def hash_password(password):
@@ -187,6 +187,76 @@ def backup_database():
                     
     except Exception as e:
         logger.error(f"❌ Ошибка при создании резервной копии: {e}")
+
+# Функции для управления пользователями
+def change_password(user_id, new_password):
+    """Изменяет пароль пользователя"""
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        password_hash = hash_password(new_password)
+        cursor.execute('UPDATE users SET password_hash = ? WHERE user_id = ?', (password_hash, user_id))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при изменении пароля: {e}")
+        return False
+
+def delete_user(user_id):
+    """Удаляет пользователя и все связанные данные"""
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        # Удаляем сессии пользователя
+        cursor.execute('DELETE FROM sessions WHERE user_id = ?', (user_id,))
+        
+        # Удаляем запросы пользователя
+        cursor.execute('DELETE FROM requests WHERE user_id = ?', (user_id,))
+        
+        # Обновляем файлы, загруженные пользователем (обнуляем uploaded_by)
+        cursor.execute('UPDATE files SET uploaded_by = NULL WHERE uploaded_by = ?', (user_id,))
+        
+        # Удаляем пользователя
+        cursor.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при удалении пользователя: {e}")
+        return False
+
+def remove_admin(user_id, current_admin_id):
+    """Убирает права администратора у пользователя"""
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        # Проверяем, что текущий пользователь - администратор
+        cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (current_admin_id,))
+        current_user = cursor.fetchone()
+        
+        if not current_user or not current_user[0]:
+            conn.close()
+            return False
+        
+        # Не позволяем убрать права у самого себя
+        if user_id == current_admin_id:
+            conn.close()
+            return False
+        
+        # Убираем права администратора
+        cursor.execute('UPDATE users SET is_admin = FALSE WHERE user_id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при удалении администратора: {e}")
+        return False
 
 # Инициализация базы данных
 def init_db():
@@ -596,6 +666,150 @@ async def logout(update, context):
         logger.error(f"Ошибка в logout: {e}")
         await update.message.reply_text("❌ Ошибка при выходе")
 
+# Команда для изменения пароля
+async def change_password_command(update, context):
+    try:
+        user = update.effective_user
+        
+        if len(context.args) == 0:
+            await update.message.reply_text(
+                "🔐 Изменение пароля\n\n"
+                "Введите новый пароль:\n"
+                "Пример: /changepassword новый_пароль\n\n"
+                "⚠️ Пароль должен быть не менее 6 символов"
+            )
+            return
+        
+        new_password = context.args[0]
+        
+        if len(new_password) < 6:
+            await update.message.reply_text("❌ Пароль должен содержать не менее 6 символов!")
+            return
+        
+        # Проверяем авторизацию
+        user_session = get_user_session(user.id)
+        if not user_session:
+            await update.message.reply_text("❌ Для изменения пароля требуется авторизация!")
+            return
+        
+        # Меняем пароль
+        success = change_password(user.id, new_password)
+        
+        if success:
+            await update.message.reply_text("✅ Пароль успешно изменен!")
+        else:
+            await update.message.reply_text("❌ Ошибка при изменении пароля!")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в change_password_command: {e}")
+        await update.message.reply_text("❌ Ошибка при изменении пароля")
+
+# Команда для удаления аккаунта
+async def delete_account_command(update, context):
+    try:
+        user = update.effective_user
+        
+        if len(context.args) == 0:
+            await update.message.reply_text(
+                "🗑️ Удаление аккаунта\n\n"
+                "⚠️ ВНИМАНИЕ: Это действие необратимо!\n"
+                "Все ваши данные будут удалены.\n\n"
+                "Для подтверждения введите:\n"
+                "/deleteaccount confirm"
+            )
+            return
+        
+        if context.args[0].lower() != 'confirm':
+            await update.message.reply_text("❌ Для удаления аккаунта введите: /deleteaccount confirm")
+            return
+        
+        # Проверяем авторизацию
+        user_session = get_user_session(user.id)
+        if not user_session:
+            await update.message.reply_text("❌ Для удаления аккаунта требуется авторизация!")
+            return
+        
+        # Удаляем аккаунт
+        success = delete_user(user.id)
+        
+        if success:
+            await update.message.reply_text("✅ Ваш аккаунт и все данные успешно удалены!")
+        else:
+            await update.message.reply_text("❌ Ошибка при удалении аккаунта!")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в delete_account_command: {e}")
+        await update.message.reply_text("❌ Ошибка при удалении аккаунта")
+
+# Команда для удаления пользователя (админ)
+async def delete_user_command(update, context):
+    try:
+        admin_user = update.effective_user
+        admin_session = get_user_session(admin_user.id)
+        
+        if not admin_session or not admin_session[3]:
+            await update.message.reply_text("❌ Доступ запрещен! Требуются права администратора.")
+            return
+        
+        if len(context.args) == 0:
+            await update.message.reply_text("Использование: /deleteuser user_id")
+            return
+        
+        try:
+            user_id_to_delete = int(context.args[0])
+            
+            # Не позволяем удалить самого себя
+            if user_id_to_delete == admin_user.id:
+                await update.message.reply_text("❌ Нельзя удалить свой собственный аккаунт!")
+                return
+            
+            # Удаляем пользователя
+            success = delete_user(user_id_to_delete)
+            
+            if success:
+                await update.message.reply_text(f"✅ Пользователь {user_id_to_delete} успешно удален!")
+            else:
+                await update.message.reply_text("❌ Ошибка при удалении пользователя!")
+        
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат user_id!")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в delete_user_command: {e}")
+        await update.message.reply_text("❌ Ошибка при удалении пользователя")
+
+# Команда для удаления администратора
+async def remove_admin_command(update, context):
+    try:
+        admin_user = update.effective_user
+        admin_session = get_user_session(admin_user.id)
+        
+        if not admin_session or not admin_session[3]:
+            await update.message.reply_text("❌ Доступ запрещен! Требуются права администратора.")
+            return
+        
+        if len(context.args) == 0:
+            await update.message.reply_text("Использование: /removeadmin user_id")
+            return
+        
+        try:
+            user_id_to_remove = int(context.args[0])
+            
+            # Убираем права администратора
+            success = remove_admin(user_id_to_remove, admin_user.id)
+            
+            if success:
+                await update.message.reply_text(f"✅ У пользователя {user_id_to_remove} убраны права администратора!")
+            else:
+                await update.message.reply_text("❌ Ошибка при удалении администратора!")
+        
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат user_id!")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в remove_admin_command: {e}")
+        await update.message.reply_text("❌ Ошибка при удалении администратора")
+
 async def personal_cabinet(update, context):
     try:
         query = update.callback_query
@@ -627,6 +841,8 @@ async def personal_cabinet(update, context):
         keyboard = [
             [InlineKeyboardButton("📊 Мои файлы", callback_data='my_files')],
             [InlineKeyboardButton("📨 Мои запросы", callback_data='my_requests')],
+            [InlineKeyboardButton("🔐 Сменить пароль", callback_data='change_password')],
+            [InlineKeyboardButton("🗑️ Удалить аккаунт", callback_data='delete_account')],
         ]
         
         if is_admin:
@@ -706,7 +922,10 @@ async def admin_users(update, context):
                 username_display = f"@{username}" if username else "без username"
                 users_text += f"• {first_name} ({username_display})\nID: {user_id}\n{status}\nДата: {reg_date[:10]}\n\n"
             
-            users_text += "Для добавления администратора используйте:\n/addadmin user_id"
+            users_text += "Команды управления:\n"
+            users_text += "/addadmin user_id - добавить администратора\n"
+            users_text += "/removeadmin user_id - убрать администратора\n"
+            users_text += "/deleteuser user_id - удалить пользователя\n"
         else:
             users_text = "👥 Пользователи не найдены"
         
@@ -800,6 +1019,25 @@ async def button_handler(update, context):
         
         if data == 'admin_users':
             await admin_users(update, context)
+            return
+        
+        if data == 'change_password':
+            await query.edit_message_text(
+                "🔐 Изменение пароля\n\n"
+                "Введите новый пароль:\n"
+                "Пример: /changepassword новый_пароль\n\n"
+                "⚠️ Пароль должен быть не менее 6 символов"
+            )
+            return
+        
+        if data == 'delete_account':
+            await query.edit_message_text(
+                "🗑️ Удаление аккаунта\n\n"
+                "⚠️ ВНИМАНИЕ: Это действие необратимо!\n"
+                "Все ваши данные будут удалены.\n\n"
+                "Для подтверждения введите:\n"
+                "/deleteaccount confirm"
+            )
             return
         
         if data == 'admin_backup':
@@ -1009,6 +1247,9 @@ async def button_handler(update, context):
                 context.user_data['admin_adding_file'] = True
     except Exception as e:
         logger.error(f"Ошибка в button_handler: {e}")
+
+# Остальные функции (get_file_name, handle_file, approve_request, reject_request, handle_text, error_handler, main)
+# остаются без изменений, как в предыдущем коде...
 
 def get_file_name(message):
     if message.document:
@@ -1341,7 +1582,11 @@ def main():
         application.add_handler(CommandHandler("login", login))
         application.add_handler(CommandHandler("register", register))
         application.add_handler(CommandHandler("logout", logout))
+        application.add_handler(CommandHandler("changepassword", change_password_command))
+        application.add_handler(CommandHandler("deleteaccount", delete_account_command))
         application.add_handler(CommandHandler("addadmin", add_admin_command))
+        application.add_handler(CommandHandler("removeadmin", remove_admin_command))
+        application.add_handler(CommandHandler("deleteuser", delete_user_command))
         application.add_handler(CommandHandler("approve", approve_request))
         application.add_handler(CommandHandler("reject", reject_request))
         application.add_handler(CommandHandler("backup", backup_command))

@@ -20,12 +20,12 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 BOT_TOKEN = "8493433461:AAEZxG0Ix7em5ff3XHF36EZCmZyPMkf6WZE"  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ТОКЕН
-DEFAULT_ADMIN_PASSWORD = "admin123"
+DEFAULT_ADMIN_PASSWORD = "34613461
 
 # FTP конфигурация
 FTP_HOST = "77.222.40.198"
-FTP_USERNAME = "grigoryl"
-FTP_PASSWORD = "WVSJMBTB7D@nNLMQWVSJMBTB7D@nNLMQ"  # Замените на ваш пароль
+FTP_USERNAME = "grigoryl_bot"
+FTP_PASSWORD = "WVSJMBTB7D@nNLMQ"  # Замените на ваш пароль
 FTP_PORT = 21
 FTP_BACKUP_DIR = "backups"
 

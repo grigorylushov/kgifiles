@@ -1,0 +1,1628 @@
+import os
+import logging
+import sqlite3
+import secrets
+import string
+import asyncio
+import time
+from datetime import datetime
+import hashlib
+import shutil
+import ftplib
+import io
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Конфигурация
+BOT_TOKEN = "8493433461:yourtoken"  # ЗАМЕНИТЕ НА ВАШ РЕАЛЬНЫЙ ТОКЕН
+DEFAULT_ADMIN_PASSWORD = "yourpass"
+
+# FTP конфигурация
+FTP_HOST = "ftphost"
+FTP_USERNAME = "youftpuser"
+FTP_PASSWORD = "yourpassword"  # Замените на ваш пароль
+FTP_PORT = 21
+FTP_BACKUP_DIR = "backups"
+
+# Предустановленные администраторы
+PRESET_ADMINS = [8112565926]  # Добавляем вашего ID и ID по умолчанию
+
+# Хеширование паролей
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# Получение пути к БД
+def get_db_path():
+    return 'files.db'
+
+# Функции для работы с FTP
+def upload_to_ftp():
+    """Загружает резервную копию на FTP сервер"""
+    try:
+        if not os.path.exists('files.db'):
+            logger.error("❌ Файл files.db не найден для загрузки на FTP")
+            return False
+        
+        if FTP_PASSWORD == "YOUR_FTP_PASSWORD_HERE":
+            logger.warning("⚠️ FTP пароль не настроен, пропускаем загрузку")
+            return False
+        
+        # Создаем резервную копию с timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"files_backup_{timestamp}.db"
+        
+        # Подключаемся к FTP
+        ftp = ftplib.FTP()
+        ftp.connect(FTP_HOST, FTP_PORT)
+        ftp.login(FTP_USERNAME, FTP_PASSWORD)
+        
+        # Создаем директорию для бэкапов если не существует
+        try:
+            ftp.mkd(FTP_BACKUP_DIR)
+        except:
+            pass  # Директория уже существует
+        
+        ftp.cwd(FTP_BACKUP_DIR)
+        
+        # Загружаем файл
+        with open('files.db', 'rb') as f:
+            ftp.storbinary(f'STOR {backup_filename}', f)
+        
+        ftp.quit()
+        logger.info(f"✅ Резервная копия загружена на FTP: {backup_filename}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при загрузке на FTP: {e}")
+        return False
+
+def download_from_ftp():
+    """Скачивает последнюю резервную копию с FTP сервера"""
+    try:
+        if FTP_PASSWORD == "YOUR_FTP_PASSWORD_HERE":
+            logger.warning("⚠️ FTP пароль не настроен, пропускаем скачивание")
+            return False
+        
+        # Подключаемся к FTP
+        ftp = ftplib.FTP()
+        ftp.connect(FTP_HOST, FTP_PORT)
+        ftp.login(FTP_USERNAME, FTP_PASSWORD)
+        
+        # Переходим в директорию бэкапов
+        try:
+            ftp.cwd(FTP_BACKUP_DIR)
+        except:
+            logger.warning("⚠️ Директория бэкапов не найдена на FTP")
+            ftp.quit()
+            return False
+        
+        # Получаем список файлов
+        files = []
+        ftp.retrlines('NLST', files.append)
+        
+        # Фильтруем только backup файлы и сортируем по дате
+        backup_files = [f for f in files if f.startswith('files_backup_') and f.endswith('.db')]
+        if not backup_files:
+            logger.warning("⚠️ Резервные копии не найдены на FTP")
+            ftp.quit()
+            return False
+        
+        # Берем самый свежий файл
+        latest_backup = sorted(backup_files)[-1]
+        
+        # Скачиваем файл
+        with open('files.db', 'wb') as f:
+            ftp.retrbinary(f'RETR {latest_backup}', f.write)
+        
+        ftp.quit()
+        logger.info(f"✅ Восстановлена БД из FTP: {latest_backup}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при скачивании с FTP: {e}")
+        return False
+
+def list_ftp_backups():
+    """Получает список резервных копий на FTP сервере"""
+    try:
+        if FTP_PASSWORD == "YOUR_FTP_PASSWORD_HERE":
+            return []
+        
+        ftp = ftplib.FTP()
+        ftp.connect(FTP_HOST, FTP_PORT)
+        ftp.login(FTP_USERNAME, FTP_PASSWORD)
+        
+        try:
+            ftp.cwd(FTP_BACKUP_DIR)
+        except:
+            ftp.quit()
+            return []
+        
+        files = []
+        ftp.retrlines('NLST', files.append)
+        
+        backup_files = [f for f in files if f.startswith('files_backup_') and f.endswith('.db')]
+        backup_files.sort(reverse=True)
+        
+        ftp.quit()
+        return backup_files[:10]  # Возвращаем последние 10 бэкапов
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при получении списка бэкапов: {e}")
+        return []
+
+# Функция для резервного копирования БД
+def backup_database():
+    """Создает резервную копию и загружает на FTP"""
+    try:
+        if os.path.exists('files.db'):
+            # Локальная резервная копия
+            backup_dir = 'local_backups'
+            if not os.path.exists(backup_dir):
+                os.makedirs(backup_dir)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_file = f"{backup_dir}/files_backup_{timestamp}.db"
+            
+            shutil.copy2('files.db', backup_file)
+            logger.info(f"✅ Создана локальная резервная копия: {backup_file}")
+            
+            # Загружаем на FTP
+            if upload_to_ftp():
+                logger.info("✅ Резервная копия загружена на FTP")
+            else:
+                logger.warning("⚠️ Не удалось загрузить на FTP")
+            
+            # Удаляем старые локальные резервные копии (оставляем последние 3)
+            backups = sorted([f for f in os.listdir(backup_dir) if f.startswith('files_backup_')])
+            if len(backups) > 3:
+                for old_backup in backups[:-3]:
+                    os.remove(os.path.join(backup_dir, old_backup))
+                    logger.info(f"🗑️ Удалена старая локальная копия: {old_backup}")
+                    
+    except Exception as e:
+        logger.error(f"❌ Ошибка при создании резервной копии: {e}")
+
+# Функции для управления пользователями
+def change_password(user_id, new_password):
+    """Изменяет пароль пользователя"""
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        password_hash = hash_password(new_password)
+        cursor.execute('UPDATE users SET password_hash = ? WHERE user_id = ?', (password_hash, user_id))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при изменении пароля: {e}")
+        return False
+
+def delete_user(user_id):
+    """Удаляет пользователя и все связанные данные"""
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        # Удаляем сессии пользователя
+        cursor.execute('DELETE FROM sessions WHERE user_id = ?', (user_id,))
+        
+        # Удаляем запросы пользователя
+        cursor.execute('DELETE FROM requests WHERE user_id = ?', (user_id,))
+        
+        # Обновляем файлы, загруженные пользователем (обнуляем uploaded_by)
+        cursor.execute('UPDATE files SET uploaded_by = NULL WHERE uploaded_by = ?', (user_id,))
+        
+        # Удаляем пользователя
+        cursor.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при удалении пользователя: {e}")
+        return False
+
+def remove_admin(user_id, current_admin_id):
+    """Убирает права администратора у пользователя"""
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        # Проверяем, что текущий пользователь - администратор
+        cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (current_admin_id,))
+        current_user = cursor.fetchone()
+        
+        if not current_user or not current_user[0]:
+            conn.close()
+            return False
+        
+        # Не позволяем убрать права у самого себя
+        if user_id == current_admin_id:
+            conn.close()
+            return False
+        
+        # Убираем права администратора
+        cursor.execute('UPDATE users SET is_admin = FALSE WHERE user_id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при удалении администратора: {e}")
+        return False
+
+# Инициализация базы данных
+def init_db():
+    try:
+        # Пробуем скачать с FTP
+        logger.info("🔄 Проверяем наличие резервных копий на FTP...")
+        downloaded = download_from_ftp()
+        
+        if not downloaded and not os.path.exists('files.db'):
+            logger.info("📝 Создаем новую базу данных")
+        
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        # Создаем таблицу files
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                file_type TEXT NOT NULL,
+                download_id TEXT UNIQUE NOT NULL,
+                upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                description TEXT,
+                uploaded_by INTEGER
+            )
+        ''')
+        
+        # Создаем таблицу requests
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                first_name TEXT,
+                request_text TEXT NOT NULL,
+                request_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'pending',
+                file_id TEXT,
+                file_type TEXT,
+                file_name TEXT
+            )
+        ''')
+        
+        # Создаем таблицу пользователей
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER UNIQUE NOT NULL,
+                username TEXT,
+                first_name TEXT,
+                password_hash TEXT,
+                is_admin BOOLEAN DEFAULT FALSE,
+                registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP
+            )
+        ''')
+        
+        # Создаем таблицу сессий
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                session_token TEXT UNIQUE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        ''')
+        
+        # Создаем администраторов по умолчанию
+        cursor.execute('SELECT user_id FROM users WHERE is_admin = TRUE')
+        existing_admins = [row[0] for row in cursor.fetchall()]
+        
+        for admin_id in PRESET_ADMINS:
+            if admin_id not in existing_admins:
+                admin_hash = hash_password(DEFAULT_ADMIN_PASSWORD)
+                cursor.execute('''
+                    INSERT OR IGNORE INTO users (user_id, username, first_name, password_hash, is_admin)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (admin_id, f'admin_{admin_id}', 'Administrator', admin_hash, True))
+                logger.info(f"✅ Создан администратор с ID: {admin_id}")
+        
+        conn.commit()
+        conn.close()
+        
+        # Создаем резервную копию после инициализации
+        backup_database()
+        
+        logger.info("База данных инициализирована")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации БД: {e}")
+
+# Генерация уникального ID для скачивания
+def generate_download_id():
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(10))
+
+# Генерация токена сессии
+def generate_session_token():
+    return secrets.token_hex(32)
+
+# Проверка авторизации пользователя
+def get_user_session(user_id):
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT u.user_id, u.username, u.first_name, u.is_admin 
+            FROM users u 
+            JOIN sessions s ON u.user_id = s.user_id 
+            WHERE u.user_id = ? AND s.expires_at > datetime('now')
+        ''', (user_id,))
+        user = cursor.fetchone()
+        conn.close()
+        return user
+    except Exception as e:
+        logger.error(f"Ошибка получения сессии: {e}")
+        return None
+
+# Создание сессии пользователя
+def create_user_session(user_id, is_admin=False):
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        # Удаляем старые сессии
+        cursor.execute('DELETE FROM sessions WHERE user_id = ?', (user_id,))
+        
+        # Создаем новую сессию (действует 30 дней)
+        session_token = generate_session_token()
+        expires_at = datetime.now().timestamp() + 30 * 24 * 60 * 60
+        
+        cursor.execute('''
+            INSERT INTO sessions (user_id, session_token, expires_at)
+            VALUES (?, ?, datetime(?, 'unixepoch'))
+        ''', (user_id, session_token, expires_at))
+        
+        conn.commit()
+        conn.close()
+        return session_token
+    except Exception as e:
+        logger.error(f"Ошибка создания сессии: {e}")
+        return None
+
+# Регистрация нового пользователя
+def register_user(user_id, username, first_name, password):
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        password_hash = hash_password(password)
+        
+        try:
+            cursor.execute('''
+                INSERT INTO users (user_id, username, first_name, password_hash, is_admin)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, username, first_name, password_hash, False))
+            conn.commit()
+            success = True
+        except sqlite3.IntegrityError:
+            success = False
+        
+        conn.close()
+        return success
+    except Exception as e:
+        logger.error(f"Ошибка регистрации: {e}")
+        return False
+
+# Аутентификация пользователя
+def authenticate_user(user_id, password):
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT password_hash, is_admin FROM users WHERE user_id = ?', (user_id,))
+        user = cursor.fetchone()
+        conn.close()
+        
+        if user and user[0] == hash_password(password):
+            return user[1]
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка аутентификации: {e}")
+        return None
+
+# Получение статистики пользователя
+def get_user_stats(user_id):
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT COUNT(*) FROM files WHERE uploaded_by = ?', (user_id,))
+        files_count = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM requests WHERE user_id = ?', (user_id,))
+        requests_count = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM requests WHERE user_id = ? AND status = "approved"', (user_id,))
+        approved_requests = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        return {
+            'files_count': files_count,
+            'requests_count': requests_count,
+            'approved_requests': approved_requests
+        }
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики: {e}")
+        return {'files_count': 0, 'requests_count': 0, 'approved_requests': 0}
+
+# Добавление администратора
+def add_admin(user_id, current_admin_id):
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (current_admin_id,))
+        current_user = cursor.fetchone()
+        
+        if not current_user or not current_user[0]:
+            conn.close()
+            return False
+        
+        cursor.execute('UPDATE users SET is_admin = TRUE WHERE user_id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка добавления админа: {e}")
+        return False
+
+async def start(update, context):
+    try:
+        user = update.effective_user
+        
+        if context.args and len(context.args) > 0 and context.args[0].startswith('download-'):
+            download_id = context.args[0].replace('download-', '')
+            await handle_download(update, context, download_id)
+            return
+        
+        user_session = get_user_session(user.id)
+        
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        
+        if user_session:
+            is_admin = user_session[3]
+            
+            if is_admin:
+                keyboard = [
+                    [InlineKeyboardButton("👤 Личный кабинет", callback_data='personal_cabinet')],
+                    [InlineKeyboardButton("👨‍💻 Админ-панель", callback_data='admin_panel')],
+                    [InlineKeyboardButton("📥 Скачать файл", callback_data='download')],
+                    [InlineKeyboardButton("📤 Запросить размещение файла", callback_data='request_upload')],
+                    [InlineKeyboardButton("ℹ️ Помощь", callback_data='help')]
+                ]
+            else:
+                keyboard = [
+                    [InlineKeyboardButton("👤 Личный кабинет", callback_data='personal_cabinet')],
+                    [InlineKeyboardButton("📥 Скачать файл", callback_data='download')],
+                    [InlineKeyboardButton("📤 Запросить размещение файла", callback_data='request_upload')],
+                    [InlineKeyboardButton("ℹ️ Помощь", callback_data='help')]
+                ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            welcome_text = f"👋 Привет, {user.first_name}!\n\n"
+            if is_admin:
+                welcome_text += "🔧 Вы вошли как администратор\n\n"
+            welcome_text += "Выберите действие:"
+            
+        else:
+            keyboard = [
+                [InlineKeyboardButton("🔐 Войти", callback_data='login')],
+                [InlineKeyboardButton("📝 Зарегистрироваться", callback_data='register')],
+                [InlineKeyboardButton("📥 Скачать файл", callback_data='download')],
+                [InlineKeyboardButton("ℹ️ Помощь", callback_data='help')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            welcome_text = f"👋 Привет, {user.first_name}!\n\n" \
+                          "🔐 Для доступа ко всем функциям требуется авторизация\n\n" \
+                          "Выберите действие:"
+        
+        if update.message:
+            await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Ошибка в start: {e}")
+
+async def handle_download(update, context, download_id):
+    try:
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT file_id, file_name, file_type, description FROM files WHERE download_id = ?', (download_id,))
+        file_data = cursor.fetchone()
+        conn.close()
+        
+        if file_data:
+            file_id, file_name, file_type, description = file_data
+            
+            caption = f"📁 {file_name}"
+            if description:
+                caption += f"\n📝 {description}"
+            
+            try:
+                if file_type == 'photo':
+                    await update.message.reply_photo(file_id, caption=caption)
+                elif file_type == 'video':
+                    await update.message.reply_video(file_id, caption=caption)
+                elif file_type == 'document':
+                    await update.message.reply_document(file_id, caption=caption)
+                elif file_type == 'audio':
+                    await update.message.reply_audio(file_id, caption=caption)
+                else:
+                    await update.message.reply_document(file_id, caption=caption)
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка при отправке файла: {e}")
+        else:
+            await update.message.reply_text("❌ Файл не найден или ссылка недействительна.")
+    except Exception as e:
+        logger.error(f"Ошибка в handle_download: {e}")
+        await update.message.reply_text("❌ Ошибка при обработке запроса")
+
+async def login(update, context):
+    try:
+        user = update.effective_user
+        
+        if len(context.args) == 0:
+            await update.message.reply_text(
+                "🔐 Вход в систему\n\n"
+                "Введите пароль:\n"
+                "Пример: /login ваш_пароль"
+            )
+            return
+        
+        password = context.args[0]
+        
+        # Проверяем аутентификацию
+        is_admin = authenticate_user(user.id, password)
+        
+        if is_admin is not None:
+            # Создаем сессию
+            create_user_session(user.id, is_admin)
+            
+            if is_admin:
+                await update.message.reply_text("✅ Успешный вход как администратор!")
+            else:
+                await update.message.reply_text("✅ Успешный вход!")
+            
+            # Показываем главное меню
+            await start(update, context)
+        else:
+            await update.message.reply_text("❌ Неверный пароль или пользователь не найден!")
+    except Exception as e:
+        logger.error(f"Ошибка в login: {e}")
+        await update.message.reply_text("❌ Ошибка при входе")
+
+async def register(update, context):
+    try:
+        user = update.effective_user
+        
+        if len(context.args) == 0:
+            await update.message.reply_text(
+                "📝 Регистрация\n\n"
+                "Введите пароль для регистрации:\n"
+                "Пример: /register ваш_пароль\n\n"
+                "⚠️ Пароль должен быть не менее 6 символов"
+            )
+            return
+        
+        password = context.args[0]
+        
+        if len(password) < 6:
+            await update.message.reply_text("❌ Пароль должен содержать не менее 6 символов!")
+            return
+        
+        # Регистрируем пользователя
+        success = register_user(user.id, user.username, user.first_name, password)
+        
+        if success:
+            # Создаем сессию
+            create_user_session(user.id, False)
+            await update.message.reply_text("✅ Регистрация прошла успешно!")
+            await start(update, context)
+        else:
+            await update.message.reply_text("❌ Пользователь уже зарегистрирован!")
+    except Exception as e:
+        logger.error(f"Ошибка в register: {e}")
+        await update.message.reply_text("❌ Ошибка при регистрации")
+
+async def logout(update, context):
+    try:
+        user = update.effective_user
+        
+        # Удаляем сессию
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM sessions WHERE user_id = ?', (user.id,))
+        conn.commit()
+        conn.close()
+        
+        await update.message.reply_text("✅ Вы вышли из системы")
+        await start(update, context)
+    except Exception as e:
+        logger.error(f"Ошибка в logout: {e}")
+        await update.message.reply_text("❌ Ошибка при выходе")
+
+# Команда для изменения пароля
+async def change_password_command(update, context):
+    try:
+        user = update.effective_user
+        
+        if len(context.args) == 0:
+            await update.message.reply_text(
+                "🔐 Изменение пароля\n\n"
+                "Введите новый пароль:\n"
+                "Пример: /changepassword новый_пароль\n\n"
+                "⚠️ Пароль должен быть не менее 6 символов"
+            )
+            return
+        
+        new_password = context.args[0]
+        
+        if len(new_password) < 6:
+            await update.message.reply_text("❌ Пароль должен содержать не менее 6 символов!")
+            return
+        
+        # Проверяем авторизацию
+        user_session = get_user_session(user.id)
+        if not user_session:
+            await update.message.reply_text("❌ Для изменения пароля требуется авторизация!")
+            return
+        
+        # Меняем пароль
+        success = change_password(user.id, new_password)
+        
+        if success:
+            await update.message.reply_text("✅ Пароль успешно изменен!")
+        else:
+            await update.message.reply_text("❌ Ошибка при изменении пароля!")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в change_password_command: {e}")
+        await update.message.reply_text("❌ Ошибка при изменении пароля")
+
+# Команда для удаления аккаунта
+async def delete_account_command(update, context):
+    try:
+        user = update.effective_user
+        
+        if len(context.args) == 0:
+            await update.message.reply_text(
+                "🗑️ Удаление аккаунта\n\n"
+                "⚠️ ВНИМАНИЕ: Это действие необратимо!\n"
+                "Все ваши данные будут удалены.\n\n"
+                "Для подтверждения введите:\n"
+                "/deleteaccount confirm"
+            )
+            return
+        
+        if context.args[0].lower() != 'confirm':
+            await update.message.reply_text("❌ Для удаления аккаунта введите: /deleteaccount confirm")
+            return
+        
+        # Проверяем авторизацию
+        user_session = get_user_session(user.id)
+        if not user_session:
+            await update.message.reply_text("❌ Для удаления аккаунта требуется авторизация!")
+            return
+        
+        # Удаляем аккаунт
+        success = delete_user(user.id)
+        
+        if success:
+            await update.message.reply_text("✅ Ваш аккаунт и все данные успешно удалены!")
+        else:
+            await update.message.reply_text("❌ Ошибка при удалении аккаунта!")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в delete_account_command: {e}")
+        await update.message.reply_text("❌ Ошибка при удалении аккаунта")
+
+# Команда для удаления пользователя (админ)
+async def delete_user_command(update, context):
+    try:
+        admin_user = update.effective_user
+        admin_session = get_user_session(admin_user.id)
+        
+        if not admin_session or not admin_session[3]:
+            await update.message.reply_text("❌ Доступ запрещен! Требуются права администратора.")
+            return
+        
+        if len(context.args) == 0:
+            await update.message.reply_text("Использование: /deleteuser user_id")
+            return
+        
+        try:
+            user_id_to_delete = int(context.args[0])
+            
+            # Не позволяем удалить самого себя
+            if user_id_to_delete == admin_user.id:
+                await update.message.reply_text("❌ Нельзя удалить свой собственный аккаунт!")
+                return
+            
+            # Удаляем пользователя
+            success = delete_user(user_id_to_delete)
+            
+            if success:
+                await update.message.reply_text(f"✅ Пользователь {user_id_to_delete} успешно удален!")
+            else:
+                await update.message.reply_text("❌ Ошибка при удалении пользователя!")
+        
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат user_id!")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в delete_user_command: {e}")
+        await update.message.reply_text("❌ Ошибка при удалении пользователя")
+
+# Команда для удаления администратора
+async def remove_admin_command(update, context):
+    try:
+        admin_user = update.effective_user
+        admin_session = get_user_session(admin_user.id)
+        
+        if not admin_session or not admin_session[3]:
+            await update.message.reply_text("❌ Доступ запрещен! Требуются права администратора.")
+            return
+        
+        if len(context.args) == 0:
+            await update.message.reply_text("Использование: /removeadmin user_id")
+            return
+        
+        try:
+            user_id_to_remove = int(context.args[0])
+            
+            # Убираем права администратора
+            success = remove_admin(user_id_to_remove, admin_user.id)
+            
+            if success:
+                await update.message.reply_text(f"✅ У пользователя {user_id_to_remove} убраны права администратора!")
+            else:
+                await update.message.reply_text("❌ Ошибка при удалении администратора!")
+        
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат user_id!")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в remove_admin_command: {e}")
+        await update.message.reply_text("❌ Ошибка при удалении администратора")
+
+async def personal_cabinet(update, context):
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = query.from_user
+        user_session = get_user_session(user.id)
+        
+        if not user_session:
+            await query.edit_message_text("❌ Для доступа к личному кабинету требуется авторизация!")
+            return
+        
+        is_admin = user_session[3]
+        stats = get_user_stats(user.id)
+        
+        cabinet_text = f"👤 Личный кабинет\n\n" \
+                      f"📛 Имя: {user.first_name}\n" \
+                      f"👤 Username: @{user.username or 'не указан'}\n" \
+                      f"🆔 ID: {user.id}\n" \
+                      f"🔧 Статус: {'Администратор' if is_admin else 'Пользователь'}\n\n" \
+                      f"📊 Статистика:\n" \
+                      f"• Загружено файлов: {stats['files_count']}\n" \
+                      f"• Отправлено запросов: {stats['requests_count']}\n" \
+                      f"• Одобрено запросов: {stats['approved_requests']}\n\n" \
+                      f"💾 Используйте /logout для выхода"
+        
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Мои файлы", callback_data='my_files')],
+            [InlineKeyboardButton("📨 Мои запросы", callback_data='my_requests')],
+            [InlineKeyboardButton("🔐 Сменить пароль", callback_data='change_password')],
+            [InlineKeyboardButton("🗑️ Удалить аккаунт", callback_data='delete_account')],
+        ]
+        
+        if is_admin:
+            keyboard.append([InlineKeyboardButton("👨‍💻 Админ-панель", callback_data='admin_panel')])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data='back_to_main')])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(cabinet_text, reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Ошибка в personal_cabinet: {e}")
+
+async def admin_panel(update, context):
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = query.from_user
+        user_session = get_user_session(user.id)
+        
+        if not user_session or not user_session[3]:
+            await query.edit_message_text("❌ Доступ запрещен! Требуются права администратора.")
+            return
+        
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')],
+            [InlineKeyboardButton("📁 Список файлов", callback_data='admin_files')],
+            [InlineKeyboardButton("📨 Запросы на размещение", callback_data='admin_requests')],
+            [InlineKeyboardButton("➕ Добавить файл", callback_data='admin_add_file')],
+            [InlineKeyboardButton("👥 Управление пользователями", callback_data='admin_users')],
+            [InlineKeyboardButton("💾 Резервная копия", callback_data='admin_backup')],
+            [InlineKeyboardButton("📋 Список бэкапов", callback_data='admin_backup_list')],
+            [InlineKeyboardButton("🔙 Назад", callback_data='back_to_main')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "👨‍💻 Админ-панель\n\n"
+            "Выберите действие:",
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        logger.error(f"Ошибка в admin_panel: {e}")
+
+async def admin_users(update, context):
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = query.from_user
+        user_session = get_user_session(user.id)
+        
+        if not user_session or not user_session[3]:
+            await query.edit_message_text("❌ Доступ запрещен!")
+            return
+        
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        # Получаем список пользователей
+        cursor.execute('''
+            SELECT user_id, username, first_name, is_admin, registration_date 
+            FROM users 
+            ORDER BY registration_date DESC 
+            LIMIT 20
+        ''')
+        users = cursor.fetchall()
+        conn.close()
+        
+        if users:
+            users_text = "👥 Список пользователей:\n\n"
+            for user_data in users:
+                user_id, username, first_name, is_admin, reg_date = user_data
+                status = "👑 Админ" if is_admin else "👤 Пользователь"
+                username_display = f"@{username}" if username else "без username"
+                users_text += f"• {first_name} ({username_display})\nID: {user_id}\n{status}\nДата: {reg_date[:10]}\n\n"
+            
+            users_text += "Команды управления:\n"
+            users_text += "/addadmin user_id - добавить администратора\n"
+            users_text += "/removeadmin user_id - убрать администратора\n"
+            users_text += "/deleteuser user_id - удалить пользователя\n"
+        else:
+            users_text = "👥 Пользователи не найдены"
+        
+        await query.edit_message_text(users_text)
+    except Exception as e:
+        logger.error(f"Ошибка в admin_users: {e}")
+
+async def add_admin_command(update, context):
+    try:
+        user = update.effective_user
+        user_session = get_user_session(user.id)
+        
+        if not user_session or not user_session[3]:
+            await update.message.reply_text("❌ Доступ запрещен! Требуются права администратора.")
+            return
+        
+        if len(context.args) == 0:
+            await update.message.reply_text("Использование: /addadmin user_id")
+            return
+        
+        try:
+            new_admin_id = int(context.args[0])
+            
+            # Добавляем администратора
+            success = add_admin(new_admin_id, user.id)
+            
+            if success:
+                await update.message.reply_text(f"✅ Пользователь {new_admin_id} теперь администратор!")
+            else:
+                await update.message.reply_text("❌ Ошибка при добавлении администратора!")
+        
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат user_id!")
+    except Exception as e:
+        logger.error(f"Ошибка в add_admin_command: {e}")
+
+# Команда для резервного копирования
+async def backup_command(update, context):
+    try:
+        user = update.effective_user
+        user_session = get_user_session(user.id)
+        
+        if not user_session or not user_session[3]:
+            await update.message.reply_text("❌ Доступ запрещен! Требуются права администратора.")
+            return
+        
+        await update.message.reply_text("🔄 Создаю резервную копию...")
+        backup_database()
+        await update.message.reply_text("✅ Резервная копия создана и загружена на FTP!")
+        
+    except Exception as e:
+        logger.error(f"Ошибка в backup_command: {e}")
+        await update.message.reply_text("❌ Ошибка при создании резервной копии")
+
+async def button_handler(update, context):
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        user_id = query.from_user.id
+        
+        if data == 'back_to_main':
+            await start(update, context)
+            return
+        
+        if data == 'login':
+            await query.edit_message_text(
+                "🔐 Вход в систему\n\n"
+                "Используйте команду:\n"
+                "/login ваш_пароль"
+            )
+            return
+        
+        if data == 'register':
+            await query.edit_message_text(
+                "📝 Регистрация\n\n"
+                "Используйте команду:\n"
+                "/register ваш_пароль\n\n"
+                "⚠️ Пароль должен быть не менее 6 символов"
+            )
+            return
+        
+        if data == 'personal_cabinet':
+            await personal_cabinet(update, context)
+            return
+        
+        if data == 'admin_panel':
+            await admin_panel(update, context)
+            return
+        
+        if data == 'admin_users':
+            await admin_users(update, context)
+            return
+        
+        if data == 'change_password':
+            await query.edit_message_text(
+                "🔐 Изменение пароля\n\n"
+                "Введите новый пароль:\n"
+                "Пример: /changepassword новый_пароль\n\n"
+                "⚠️ Пароль должен быть не менее 6 символов"
+            )
+            return
+        
+        if data == 'delete_account':
+            await query.edit_message_text(
+                "🗑️ Удаление аккаунта\n\n"
+                "⚠️ ВНИМАНИЕ: Это действие необратимо!\n"
+                "Все ваши данные будут удалены.\n\n"
+                "Для подтверждения введите:\n"
+                "/deleteaccount confirm"
+            )
+            return
+        
+        if data == 'admin_backup':
+            user_session = get_user_session(user_id)
+            if not user_session or not user_session[3]:
+                await query.edit_message_text("❌ Доступ запрещен!")
+                return
+                
+            await query.edit_message_text("🔄 Создаю резервную копию...")
+            backup_database()
+            await query.edit_message_text("✅ Резервная копия создана и загружена на FTP!")
+            return
+
+        if data == 'admin_backup_list':
+            user_session = get_user_session(user_id)
+            if not user_session or not user_session[3]:
+                await query.edit_message_text("❌ Доступ запрещен!")
+                return
+                
+            await query.edit_message_text("🔄 Получаю список резервных копий...")
+            backups = list_ftp_backups()
+            
+            if backups:
+                backups_text = "📋 Последние резервные копии на FTP:\n\n"
+                for i, backup in enumerate(backups, 1):
+                    # Извлекаем дату из имени файла
+                    date_str = backup.replace('files_backup_', '').replace('.db', '')
+                    try:
+                        date_obj = datetime.strptime(date_str, "%Y%m%d_%H%M%S")
+                        formatted_date = date_obj.strftime("%d.%m.%Y %H:%M:%S")
+                    except:
+                        formatted_date = date_str
+                    
+                    backups_text += f"{i}. {formatted_date}\n"
+                
+                backups_text += f"\nВсего копий: {len(backups)}"
+            else:
+                backups_text = "📋 Резервные копии не найдены на FTP сервере"
+            
+            await query.edit_message_text(backups_text)
+            return
+        
+        if data == 'download':
+            await query.edit_message_text(
+                "📥 Для скачивания файла используйте специальную ссылку, "
+                "которую вам предоставил администратор."
+            )
+        
+        elif data == 'request_upload':
+            user_session = get_user_session(user_id)
+            if not user_session:
+                await query.edit_message_text("❌ Для отправки запросов требуется авторизация!")
+                return
+                
+            await query.edit_message_text(
+                "📤 Запрос на размещение файла\n\n"
+                "Пожалуйста, отправьте файл, который хотите разместить, "
+                "и в подписи к нему укажите описание файла.\n\n"
+                "Ваш запрос будет отправлен администратору на рассмотрение."
+            )
+            context.user_data['awaiting_file'] = True
+        
+        elif data == 'help':
+            await query.edit_message_text(
+                "ℹ️ Помощь\n\n"
+                "Как использовать бот:\n"
+                "• Для скачивания - используйте ссылку вида: https://t.me/your_bot?start=download-UNIQUE_ID\n"
+                "• Для запроса размещения файла - нажмите соответствующую кнопку и отправьте файл с описанием\n"
+                "• Администраторы могут управлять файлами через админ-панель\n"
+                "• Пользователи могут регистрироваться и входить в личный кабинет\n\n"
+                "По вопросам обращайтесь к администратору."
+            )
+        
+        elif data == 'my_files':
+            user_session = get_user_session(user_id)
+            if not user_session:
+                await query.edit_message_text("❌ Для просмотра файлов требуется авторизация!")
+                return
+                
+            conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute('SELECT file_name, download_id, upload_date FROM files WHERE uploaded_by = ? ORDER BY upload_date DESC LIMIT 10', (user_id,))
+            files = cursor.fetchall()
+            conn.close()
+            
+            if files:
+                files_text = "📁 Ваши файлы:\n\n"
+                for file in files:
+                    file_name, download_id, upload_date = file
+                    files_text += f"• {file_name}\nID: {download_id}\nДата: {upload_date[:10]}\n\n"
+            else:
+                files_text = "📁 У вас пока нет файлов"
+            
+            await query.edit_message_text(files_text)
+        
+        elif data == 'my_requests':
+            user_session = get_user_session(user_id)
+            if not user_session:
+                await query.edit_message_text("❌ Для просмотра запросов требуется авторизация!")
+                return
+                
+            conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute('SELECT request_text, status, request_date FROM requests WHERE user_id = ? ORDER BY request_date DESC LIMIT 10', (user_id,))
+            requests = cursor.fetchall()
+            conn.close()
+            
+            if requests:
+                requests_text = "📨 Ваши запросы:\n\n"
+                for req in requests:
+                    text, status, date = req
+                    status_icon = "✅" if status == "approved" else "❌" if status == "rejected" else "⏳"
+                    requests_text += f"{status_icon} {text}\nСтатус: {status}\nДата: {date[:10]}\n\n"
+            else:
+                requests_text = "📨 У вас пока нет запросов"
+            
+            await query.edit_message_text(requests_text)
+        
+        elif data.startswith('admin_'):
+            user_session = get_user_session(user_id)
+            if not user_session or not user_session[3]:
+                await query.edit_message_text("❌ Доступ запрещен!")
+                return
+            
+            if data == 'admin_stats':
+                conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+                cursor = conn.cursor()
+                
+                cursor.execute('SELECT COUNT(*) FROM files')
+                files_count = cursor.fetchone()[0]
+                
+                cursor.execute('SELECT COUNT(*) FROM requests WHERE status = "pending"')
+                pending_requests = cursor.fetchone()[0]
+                
+                cursor.execute('SELECT COUNT(*) FROM users')
+                users_count = cursor.fetchone()[0]
+                
+                cursor.execute('SELECT COUNT(*) FROM users WHERE is_admin = TRUE')
+                admins_count = cursor.fetchone()[0]
+                
+                conn.close()
+                
+                await query.edit_message_text(
+                    f"📊 Статистика системы\n\n"
+                    f"• Всего файлов: {files_count}\n"
+                    f"• Ожидающих запросов: {pending_requests}\n"
+                    f"• Всего пользователей: {users_count}\n"
+                    f"• Администраторов: {admins_count}"
+                )
+            
+            elif data == 'admin_files':
+                conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+                cursor = conn.cursor()
+                cursor.execute('SELECT id, file_name, download_id, upload_date FROM files ORDER BY upload_date DESC LIMIT 10')
+                files = cursor.fetchall()
+                conn.close()
+                
+                if files:
+                    files_list = "📁 Последние файлы:\n\n"
+                    for file in files:
+                        file_id, file_name, download_id, upload_date = file
+                        files_list += f"• {file_name}\nID: {download_id}\nДата: {upload_date[:10]}\n\n"
+                    
+                    # Получаем username бота безопасно
+                    try:
+                        bot_username = context.bot.username
+                        files_list += f"Ссылка для скачивания:\nhttps://t.me/{bot_username}?start=download-"
+                    except:
+                        files_list += "Ссылка для скачивания:\nhttps://t.me/your_bot?start=download-"
+                else:
+                    files_list = "📁 Файлы отсутствуют"
+                
+                await query.edit_message_text(files_list)
+            
+            elif data == 'admin_requests':
+                conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, user_id, username, first_name, request_text, request_date, file_id, file_type, file_name
+                    FROM requests 
+                    WHERE status = "pending" 
+                    ORDER BY request_date DESC
+                ''')
+                requests = cursor.fetchall()
+                conn.close()
+                
+                if requests:
+                    requests_text = "📨 Ожидающие запросы:\n\n"
+                    for req in requests:
+                        req_id, user_id, username, first_name, request_text, request_date, file_id, file_type, file_name = req
+                        username = username or "Не указан"
+                        file_name_display = file_name or "Не указано"
+                        requests_text += f"🆔 {req_id}\n👤 {first_name} (@{username})\nID: {user_id}\n📝 {request_text}\n📁 Файл: {file_name_display}\n📅 {request_date[:10]}\n\n"
+                    
+                    requests_text += "Для обработки запроса используйте /approve <id> или /reject <id>"
+                else:
+                    requests_text = "✅ Нет ожидающих запросов"
+                
+                await query.edit_message_text(requests_text)
+            
+            elif data == 'admin_add_file':
+                await query.edit_message_text(
+                    "➕ Добавление файла\n\n"
+                    "Отправьте файл, который хотите добавить. "
+                    "В подписи к файлу можно указать описание."
+                )
+                context.user_data['admin_adding_file'] = True
+    except Exception as e:
+        logger.error(f"Ошибка в button_handler: {e}")
+
+# Остальные функции (get_file_name, handle_file, approve_request, reject_request, handle_text, error_handler, main)
+# остаются без изменений, как в предыдущем коде...
+
+def get_file_name(message):
+    if message.document:
+        return message.document.file_name or "document"
+    elif message.photo:
+        return "photo.jpg"
+    elif message.video:
+        return message.video.file_name or "video.mp4"
+    elif message.audio:
+        return message.audio.file_name or "audio.mp3"
+    return "file"
+
+async def handle_file(update, context):
+    try:
+        user_id = update.effective_user.id
+        message = update.message
+        
+        if not message:
+            return
+        
+        # Проверяем авторизацию для запросов на размещение
+        if context.user_data.get('awaiting_file'):
+            user_session = get_user_session(user_id)
+            if not user_session:
+                await message.reply_text("❌ Для отправки запросов требуется авторизация!")
+                context.user_data['awaiting_file'] = False
+                return
+            
+            # Сохраняем запрос в базу данных С ФАЙЛОМ
+            conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+            cursor = conn.cursor()
+            
+            file_type = None
+            file_id = None
+            file_name = None
+            
+            if message.document:
+                file_type = 'document'
+                file_id = message.document.file_id
+                file_name = message.document.file_name or "document"
+            elif message.photo:
+                file_type = 'photo'
+                file_id = message.photo[-1].file_id
+                file_name = "photo.jpg"
+            elif message.video:
+                file_type = 'video'
+                file_id = message.video.file_id
+                file_name = message.video.file_name or "video.mp4"
+            elif message.audio:
+                file_type = 'audio'
+                file_id = message.audio.file_id
+                file_name = message.audio.file_name or "audio.mp3"
+            
+            description = message.caption or "Без описания"
+            
+            try:
+                # Сохраняем запрос с информацией о файле
+                cursor.execute('''
+                    INSERT INTO requests (user_id, username, first_name, request_text, file_id, file_type, file_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (user_id, update.effective_user.username, update.effective_user.first_name, description, file_id, file_type, file_name))
+                
+                conn.commit()
+                request_id = cursor.lastrowid
+                conn.close()
+                
+                # Уведомляем администраторов
+                conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+                cursor = conn.cursor()
+                cursor.execute('SELECT user_id FROM users WHERE is_admin = TRUE')
+                admins = cursor.fetchall()
+                conn.close()
+                
+                for admin in admins:
+                    try:
+                        await context.bot.send_message(
+                            admin[0],
+                            f"📨 Новый запрос на размещение файла!\n\n"
+                            f"🆔 ID запроса: {request_id}\n"
+                            f"👤 Пользователь: {update.effective_user.first_name} (@{update.effective_user.username or 'нет'})\n"
+                            f"🆔 User ID: {user_id}\n"
+                            f"📁 Файл: {file_name}\n"
+                            f"📝 Описание: {description}\n\n"
+                            f"Для одобрения: /approve {request_id}\n"
+                            f"Для отклонения: /reject {request_id}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка при отправке уведомления администратору {admin[0]}: {e}")
+                
+                await message.reply_text(
+                    "✅ Ваш запрос отправлен администратору на рассмотрение. "
+                    "Вы получите уведомление, когда запрос будет обработан."
+                )
+                context.user_data['awaiting_file'] = False
+                
+            except Exception as e:
+                logger.error(f"Ошибка при сохранении запроса: {e}")
+                await message.reply_text(
+                    "❌ Произошла ошибка при обработке запроса. "
+                    "Пожалуйста, попробуйте еще раз позже."
+                )
+                conn.close()
+        
+        # Проверяем, добавляет ли администратор файл напрямую
+        elif context.user_data.get('admin_adding_file'):
+            user_session = get_user_session(user_id)
+            if not user_session or not user_session[3]:
+                await message.reply_text("❌ Доступ запрещен! Требуются права администратора.")
+                context.user_data['admin_adding_file'] = False
+                return
+                
+            file_type = None
+            file_id = None
+            
+            if message.document:
+                file_type = 'document'
+                file_id = message.document.file_id
+            elif message.photo:
+                file_type = 'photo'
+                file_id = message.photo[-1].file_id
+            elif message.video:
+                file_type = 'video'
+                file_id = message.video.file_id
+            elif message.audio:
+                file_type = 'audio'
+                file_id = message.audio.file_id
+            
+            if file_id:
+                download_id = generate_download_id()
+                file_name = get_file_name(message)
+                description = message.caption or "Без описания"
+                
+                conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO files (file_id, file_name, file_type, download_id, description, uploaded_by)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (file_id, file_name, file_type, download_id, description, user_id))
+                conn.commit()
+                conn.close()
+                
+                # Получаем username бота безопасно
+                try:
+                    bot_username = context.bot.username
+                    download_link = f"https://t.me/{bot_username}?start=download-{download_id}"
+                except:
+                    download_link = f"Ссылка будет доступна после перезапуска"
+                
+                await message.reply_text(
+                    f"✅ Файл успешно добавлен!\n\n"
+                    f"📁 Имя: {file_name}\n"
+                    f"📝 Описание: {description}\n"
+                    f"🔗 Ссылка для скачивания:\n{download_link}"
+                )
+            
+            context.user_data['admin_adding_file'] = False
+    except Exception as e:
+        logger.error(f"Ошибка в handle_file: {e}")
+
+async def approve_request(update, context):
+    try:
+        user = update.effective_user
+        user_session = get_user_session(user.id)
+        
+        if not user_session or not user_session[3]:
+            await update.message.reply_text("❌ Доступ запрещен! Требуются права администратора.")
+            return
+        
+        if len(context.args) == 0:
+            await update.message.reply_text("Использование: /approve <id_запроса>")
+            return
+        
+        request_id = context.args[0]
+        
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        # Получаем информацию о запросе ВКЛЮЧАЯ ДАННЫЕ О ФАЙЛЕ
+        cursor.execute('''
+            SELECT user_id, request_text, file_id, file_type, file_name 
+            FROM requests 
+            WHERE id = ? AND status = "pending"
+        ''', (request_id,))
+        request_data = cursor.fetchone()
+        
+        if not request_data:
+            await update.message.reply_text("❌ Запрос не найден или уже обработан!")
+            conn.close()
+            return
+        
+        user_id, description, file_id, file_type, file_name = request_data
+        
+        # СОЗДАЕМ ЗАПИСЬ В ТАБЛИЦЕ ФАЙЛОВ
+        download_id = generate_download_id()
+        
+        try:
+            cursor.execute('''
+                INSERT INTO files (file_id, file_name, file_type, download_id, description, uploaded_by)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (file_id, file_name, file_type, download_id, description, user_id))
+            
+            # Обновляем статус запроса
+            cursor.execute('UPDATE requests SET status = "approved" WHERE id = ?', (request_id,))
+            conn.commit()
+            
+            # Получаем username бота безопасно
+            try:
+                bot_username = context.bot.username
+                download_link = f"https://t.me/{bot_username}?start=download-{download_id}"
+            except:
+                download_link = f"Ссылка будет доступна после перезапуска"
+            
+            # Уведомляем пользователя
+            try:
+                await context.bot.send_message(
+                    user_id,
+                    f"✅ Ваш запрос на размещение файла одобрен!\n\n"
+                    f"📁 Файл: {file_name}\n"
+                    f"📝 Описание: {description}\n"
+                    f"🔗 Ссылка для скачивания:\n{download_link}"
+                )
+            except Exception as e:
+                logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
+            
+            await update.message.reply_text(
+                f"✅ Запрос одобрен!\n\n"
+                f"Ссылка для скачивания:\n{download_link}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Ошибка при одобрении запроса: {e}")
+            await update.message.reply_text("❌ Ошибка при обработке запроса")
+        
+        conn.close()
+    except Exception as e:
+        logger.error(f"Ошибка в approve_request: {e}")
+
+async def reject_request(update, context):
+    try:
+        user = update.effective_user
+        user_session = get_user_session(user.id)
+        
+        if not user_session or not user_session[3]:
+            await update.message.reply_text("❌ Доступ запрещен! Требуются права администратора.")
+            return
+        
+        if len(context.args) == 0:
+            await update.message.reply_text("Использование: /reject <id_запроса>")
+            return
+        
+        request_id = context.args[0]
+        
+        conn = sqlite3.connect(get_db_path(), check_same_thread=False)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT user_id FROM requests WHERE id = ? AND status = "pending"', (request_id,))
+        request_data = cursor.fetchone()
+        
+        if not request_data:
+            await update.message.reply_text("❌ Запрос не найден или уже обработан!")
+            conn.close()
+            return
+        
+        user_id = request_data[0]
+        
+        cursor.execute('UPDATE requests SET status = "rejected" WHERE id = ?', (request_id,))
+        conn.commit()
+        conn.close()
+        
+        # Уведомляем пользователя
+        try:
+            await context.bot.send_message(
+                user_id,
+                "❌ Ваш запрос на размещение файла отклонен администратором."
+            )
+        except Exception as e:
+            logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
+        
+        await update.message.reply_text("✅ Запрос отклонен!")
+    except Exception as e:
+        logger.error(f"Ошибка в reject_request: {e}")
+
+async def handle_text(update, context):
+    try:
+        if not update.message:
+            return
+            
+        if update.message.text and not update.message.text.startswith('/'):
+            if not context.user_data.get('awaiting_file') and not context.user_data.get('admin_adding_file'):
+                await update.message.reply_text(
+                    "Используйте /start для начала работы с ботом."
+                )
+    except Exception as e:
+        logger.error(f"Ошибка в handle_text: {e}")
+
+async def error_handler(update, context):
+    """Обработчик ошибок"""
+    logger.error(f"Ошибка при обработке обновления: {context.error}")
+    try:
+        raise context.error
+    except Exception as e:
+        logger.exception("Исключение в обработчике ошибок:")
+
+def main():
+    """Основная функция запуска бота - СИНХРОННАЯ для Railway"""
+    try:
+        # Проверяем наличие необходимых библиотек
+        try:
+            from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+        except ImportError:
+            print("❌ Библиотека python-telegram-bot не установлена!")
+            print("Добавьте в requirements.txt: python-telegram-bot==20.7")
+            return
+        
+        # Инициализация базы данных
+        init_db()
+        
+        # Проверяем наличие токена
+        if not BOT_TOKEN:
+            logger.error("❌ BOT_TOKEN не установлен! Укажите токен в коде.")
+            return
+        
+        logger.info(f"🚀 Запуск бота с токеном: {BOT_TOKEN[:10]}...")
+        
+        # Создаем и запускаем приложение СИНХРОННО
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        # Обработчики команд
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("login", login))
+        application.add_handler(CommandHandler("register", register))
+        application.add_handler(CommandHandler("logout", logout))
+        application.add_handler(CommandHandler("changepassword", change_password_command))
+        application.add_handler(CommandHandler("deleteaccount", delete_account_command))
+        application.add_handler(CommandHandler("addadmin", add_admin_command))
+        application.add_handler(CommandHandler("removeadmin", remove_admin_command))
+        application.add_handler(CommandHandler("deleteuser", delete_user_command))
+        application.add_handler(CommandHandler("approve", approve_request))
+        application.add_handler(CommandHandler("reject", reject_request))
+        application.add_handler(CommandHandler("backup", backup_command))
+        
+        # Обработчики callback запросов
+        application.add_handler(CallbackQueryHandler(button_handler))
+        
+        # Обработчики сообщений с файлами
+        application.add_handler(MessageHandler(
+            filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO,
+            handle_file
+        ))
+        
+        # Обработчик текстовых сообщений
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+        
+        # Обработчик ошибок
+        application.add_error_handler(error_handler)
+        
+        # Запуск бота
+        logger.info("🤖 Бот запускается...")
+        print("🚀 Бот запущен!")
+        print(f"📍 Токен: {BOT_TOKEN[:10]}...")
+        print("⏹️ Для остановки нажмите Ctrl+C")
+        
+        # ЗАПУСКАЕМ БОТА СИНХРОННО
+        application.run_polling()
+        
+    except KeyboardInterrupt:
+        # Создаем резервную копию при остановке
+        backup_database()
+        logger.info("Бот остановлен пользователем")
+        print("\n🛑 Бот остановлен")
+    except Exception as e:
+        logger.error(f"Фатальная ошибка: {e}")
+        print(f"❌ Фатальная ошибка: {e}")
+
+if __name__ == '__main__':
+    main()
